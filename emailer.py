@@ -46,6 +46,9 @@ def _base_url():
 
 
 def render_digest(user, rows):
+    n = len(rows)
+    noun = "match" if n == 1 else "matches"
+
     items = ""
     for _, r in rows.iterrows():
         items += f"""
@@ -66,10 +69,12 @@ def render_digest(user, rows):
                   f'Reply STOP to unsubscribe')
 
     return f"""<html><body style="font-family:Arial,sans-serif;max-width:640px;margin:auto">
-      <h2>🎯 {len(rows)} new internship matches</h2>
+      <h2>🎯 {n} new internship {noun}</h2>
       <p>Keywords: <i>{', '.join(user['keywords'])}</i></p>
       {items}
-      <p style="color:#999;font-size:11px">{unsub_line}</p>
+      <p style="color:#999;font-size:11px">
+        {unsub_line} · Internship Aggregator · <a href="{base or '#'}" style="color:#999">Manage preferences</a>
+      </p>
     </body></html>"""
 
 
@@ -126,8 +131,10 @@ def run_digest_for(email, top_n=10, time_filter="all"):
         return {"status": "no_new", "raw": raw,
                 "already_sent": len(sent_ids), "sent": 0}
 
+    n = len(hits)
+    noun = "match" if n == 1 else "matches"
     ok = send_email(u["email"],
-                    f"🎯 {len(hits)} internship matches — {datetime.utcnow():%Y-%m-%d}",
+                    f"🎯 {n} internship {noun} — {datetime.utcnow():%Y-%m-%d}",
                     render_digest(u, hits))
 
     if ok and not _dry_run():
