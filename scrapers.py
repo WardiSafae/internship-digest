@@ -1,4 +1,3 @@
-%%writefile /content/internship-digest/internship-digest/scrapers.py
 """
 Scrapers for public job sources. Each returns a list of Internship.
 
