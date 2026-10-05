@@ -1,3 +1,4 @@
+%%writefile /content/internship-digest/internship-digest/scrapers.py
 """
 Scrapers for public job sources. Each returns a list of Internship.
 
@@ -44,11 +45,7 @@ class Internship:
             self.id = hashlib.md5(k.encode()).hexdigest()
 
 
-# ============================================================
-# Sources that work reliably (verified)
-# ============================================================
-
-# 1. Remotive — public API, no key
+# 1. Remotive
 def scrape_remotive():
     out = []
     try:
@@ -66,7 +63,7 @@ def scrape_remotive():
     return out
 
 
-# 2. Arbeitnow — public API
+# 2. Arbeitnow
 def scrape_arbeitnow():
     out = []
     try:
@@ -86,7 +83,7 @@ def scrape_arbeitnow():
     return out
 
 
-# 3. HN Who is Hiring — Algolia API
+# 3. HN Who is Hiring
 def scrape_hn_whoishiring():
     out = []
     try:
@@ -111,7 +108,7 @@ def scrape_hn_whoishiring():
     return out
 
 
-# 4. Jobspresso — RSS (verified working)
+# 4. Jobspresso
 def scrape_jobspresso():
     out = []
     try:
@@ -127,18 +124,15 @@ def scrape_jobspresso():
     return out
 
 
-# 5. RemoteOK — public API (was returning 0, endpoint still works,
-#    fix: don't require 'intern' in title since RemoteOK mixes everything)
+# 5. RemoteOK (fixed: also matches tags, not just title)
 def scrape_remoteok():
     out = []
     try:
         r = requests.get("https://remoteok.com/api", headers=HEADERS, timeout=15)
         data = r.json()
-        # The first element is a metadata header — skip it
         rows = data[1:] if isinstance(data, list) and len(data) > 1 else []
         for j in rows:
             title = j.get("position", "")
-            # RemoteOK tags are more useful than title for filtering
             tags = [t.lower() for t in (j.get("tags") or [])]
             text = (title + " " + " ".join(tags)).lower()
             if "intern" not in text and "junior" not in text and "entry" not in text:
@@ -152,15 +146,13 @@ def scrape_remoteok():
     return out
 
 
-# 6. Jobicy — public API. Was returning 1 because the API
-#    paginates by industry tag; drop the industry filter.
+# 6. Jobicy (fixed: removed industry filter)
 def scrape_jobicy():
     out = []
     try:
         r = requests.get("https://jobicy.com/api/v2/remote-jobs",
                          params={"count": 100}, headers=HEADERS, timeout=15)
-        data = r.json()
-        for j in data.get("jobs", []):
+        for j in r.json().get("jobs", []):
             title = j.get("jobTitle", "")
             if "intern" not in title.lower():
                 continue
@@ -173,8 +165,7 @@ def scrape_jobicy():
     return out
 
 
-# 7. Himalayas — public API. Was 0 because their API changed
-#    the response shape; check both possible keys.
+# 7. Himalayas (fixed: handle both response shapes)
 def scrape_himalayas():
     out = []
     try:
@@ -200,8 +191,7 @@ def scrape_himalayas():
     return out
 
 
-# 8. WeWorkRemotely — use the correct RSS; the "internship" category
-#    has a different URL than what we were hitting.
+# 8. WeWorkRemotely (fixed: try 3 RSS variants)
 def scrape_weworkremotely():
     out = []
     feeds = [
@@ -214,7 +204,7 @@ def scrape_weworkremotely():
             f = feedparser.parse(url, request_headers=HEADERS)
             if not f.entries:
                 continue
-            print(f"  [wwr] {url} → {len(f.entries)} entries")
+            print(f"  [wwr] {url} -> {len(f.entries)} entries")
             for e in f.entries:
                 t = e.title
                 if "intern" not in t.lower():
@@ -230,7 +220,7 @@ def scrape_weworkremotely():
     return out
 
 
-# 9. NoDesk — try multiple possible feed paths
+# 9. NoDesk (fixed: try 3 feed paths)
 def scrape_nodesk():
     out = []
     feeds = [
@@ -243,7 +233,7 @@ def scrape_nodesk():
             f = feedparser.parse(url, request_headers=HEADERS)
             if not f.entries:
                 continue
-            print(f"  [nodesk] {url} → {len(f.entries)} entries")
+            print(f"  [nodesk] {url} -> {len(f.entries)} entries")
             for e in f.entries:
                 t = e.title
                 if "intern" not in t.lower():
@@ -259,7 +249,7 @@ def scrape_nodesk():
     return out
 
 
-# 10. JustRemote — several feed variants
+# 10. JustRemote (fixed: try 3 feed variants)
 def scrape_justremote():
     out = []
     feeds = [
@@ -272,7 +262,7 @@ def scrape_justremote():
             f = feedparser.parse(url, request_headers=HEADERS)
             if not f.entries:
                 continue
-            print(f"  [justremote] {url} → {len(f.entries)} entries")
+            print(f"  [justremote] {url} -> {len(f.entries)} entries")
             for e in f.entries:
                 t = e.title
                 if "intern" not in t.lower():
@@ -288,11 +278,7 @@ def scrape_justremote():
     return out
 
 
-# ============================================================
-# New sources (added to broaden coverage)
-# ============================================================
-
-# 11. Findwork — public API (free, no key)
+# 11. Findwork (new)
 def scrape_findwork():
     out = []
     try:
@@ -312,8 +298,7 @@ def scrape_findwork():
     return out
 
 
-# 12. USAJobs — US federal internships (public API needs key;
-#     skip unless you sign up). Alternative: Remote.co RSS
+# 12. Remote.co (new)
 def scrape_remoteco():
     out = []
     try:
@@ -332,7 +317,7 @@ def scrape_remoteco():
     return out
 
 
-# 13. Real Work From Anywhere (RWFA) RSS
+# 13. Real Work From Anywhere (new)
 def scrape_rwfa():
     out = []
     try:
@@ -351,15 +336,18 @@ def scrape_rwfa():
     return out
 
 
-# 14. Underdog.io — public API (no key needed for basic feed)
+# 14. Underdog.io (new)
 def scrape_underdog():
     out = []
     try:
         r = requests.get("https://api.underdog.io/jobs",
                          params={"q": "intern"}, headers=HEADERS, timeout=15)
         data = r.json()
-        rows = data.get("jobs") or data if isinstance(data, list) else data.get("jobs", [])
-        for j in (rows or []):
+        if isinstance(data, list):
+            rows = data
+        else:
+            rows = data.get("jobs", []) or []
+        for j in rows:
             title = j.get("title") or j.get("role", "")
             if "intern" not in title.lower():
                 continue
@@ -375,24 +363,17 @@ def scrape_underdog():
     return out
 
 
-# ============================================================
-# Orchestrator
-# ============================================================
-
 SCRAPERS = [
-    # Verified working
     scrape_remotive,
     scrape_arbeitnow,
     scrape_hn_whoishiring,
     scrape_jobspresso,
-    # Fixed endpoints
     scrape_remoteok,
     scrape_jobicy,
     scrape_himalayas,
     scrape_weworkremotely,
     scrape_nodesk,
     scrape_justremote,
-    # Extra coverage
     scrape_findwork,
     scrape_remoteco,
     scrape_rwfa,
@@ -408,11 +389,11 @@ def run_all_scrapers():
             t0 = time.time()
             its = fn()
             dur = time.time() - t0
-            marker = "✅" if its else "⚠️"
+            marker = "OK" if its else "--"
             print(f"  {marker} {fn.__name__:28s} {len(its):3d} items  ({dur:.1f}s)")
             all_items.extend(its)
         except Exception as e:
-            print(f"  ❌ {fn.__name__:28s} FAILED: {e}")
+            print(f"  ERR {fn.__name__:28s} FAILED: {e}")
         time.sleep(0.4)
 
     seen, out = set(), []
