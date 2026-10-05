@@ -2,9 +2,9 @@
 Scrapers for public job sources. Each returns a list of Internship.
 
 Design notes:
-  - Every network call has a hard timeout. No source can hang the job.
-  - Filters are relaxed: entry-level titles match several keywords.
-  - Dead sources removed. Add new ones at the bottom of SCRAPERS.
+  - Every network call has a hard timeout.
+  - Filters use a broadened entry-level matcher.
+  - Sources that don't work are removed rather than left silent.
 """
 import re
 import time
@@ -33,7 +33,6 @@ def _is_entry_level(text):
 
 
 def _fetch_feed(url, timeout=8):
-    """Fetch RSS with a hard timeout. Returns feedparser object or None."""
     try:
         r = requests.get(url, headers=HEADERS, timeout=timeout)
         if r.status_code != 200:
@@ -63,27 +62,35 @@ class Internship:
             self.id = hashlib.md5(k.encode()).hexdigest()
 
 
-# ----------------------------------------------------------------
-# Sources
-# ----------------------------------------------------------------
+# ---------------- Sources ----------------
 
 def scrape_remotive():
+    """Remotive API with retry on rate limit."""
     out = []
-    try:
-        r = requests.get("https://remotive.com/api/remote-jobs",
-                         params={"search": "intern"}, headers=HEADERS, timeout=8)
-        for j in r.json().get("jobs", []):
-            title = j.get("title", "")
-            if not _is_entry_level(title):
+    for attempt in (1, 2):
+        try:
+            r = requests.get("https://remotive.com/api/remote-jobs",
+                             params={"search": "intern"},
+                             headers=HEADERS, timeout=10)
+            if r.status_code == 429:
+                print(f"  [remotive] 429 rate-limited, retrying…")
+                time.sleep(3)
                 continue
-            out.append(Internship(
-                title, j.get("company_name", ""),
-                j.get("candidate_required_location", "Remote"),
-                _c(j.get("description", ""))[:2000], j.get("url", ""),
-                "remotive", j.get("tags", []),
-                j.get("publication_date", ""), True))
-    except Exception as e:
-        print(f"  [remotive] {type(e).__name__}")
+            jobs = r.json().get("jobs", [])
+            print(f"  [remotive] {len(jobs)} raw jobs")
+            for j in jobs:
+                title = j.get("title", "")
+                out.append(Internship(
+                    title, j.get("company_name", ""),
+                    j.get("candidate_required_location", "Remote"),
+                    _c(j.get("description", ""))[:2000], j.get("url", ""),
+                    "remotive", j.get("tags", []),
+                    j.get("publication_date", ""), True))
+            break
+        except Exception as e:
+            print(f"  [remotive] {type(e).__name__}")
+            if attempt == 1:
+                time.sleep(2)
     return out
 
 
@@ -210,6 +217,7 @@ def scrape_himalayas():
 def scrape_weworkremotely():
     out = []
     for url in [
+        "https://weworkremotely.com/remote-jobs.rss",
         "https://weworkremotely.com/categories/remote-jobs.rss",
         "https://weworkremotely.com/categories/remote-internship-jobs.rss",
     ]:
@@ -230,25 +238,33 @@ def scrape_weworkremotely():
     return out
 
 
-def scrape_remoteco():
+def scrape_working_nomads():
+    """Working Nomads — public JSON API."""
     out = []
-    f = _fetch_feed("https://remote.co/remote-jobs/feed/")
-    if not f:
-        return out
-    for e in f.entries:
-        t = e.title
-        if not _is_entry_level(t):
-            continue
-        out.append(Internship(
-            t, "", "Remote",
-            _c(e.get("summary", ""))[:2000], e.link,
-            "remoteco", [], e.get("published", ""), True))
+    try:
+        r = requests.get("https://www.workingnomads.com/api/exposed_jobs/",
+                         headers=HEADERS, timeout=8)
+        print(f"  [working_nomads] {r.status_code}, {len(r.content)} bytes")
+        for j in r.json():
+            title = j.get("title", "")
+            if not _is_entry_level(title):
+                continue
+            out.append(Internship(
+                title, j.get("company_name", ""),
+                j.get("location", "Remote"),
+                _c(j.get("description", ""))[:2000],
+                j.get("url", ""),
+                "working_nomads", j.get("tags", []) or [],
+                j.get("pub_date", ""), True))
+    except Exception as e:
+        print(f"  [working_nomads] {type(e).__name__}")
     return out
 
 
-def scrape_rwfa():
+def scrape_remoteio():
+    """Remote.io — RSS."""
     out = []
-    f = _fetch_feed("https://www.realworkfromanywhere.com/rss")
+    f = _fetch_feed("https://remote.io/rss")
     if not f:
         return out
     for e in f.entries:
@@ -258,21 +274,20 @@ def scrape_rwfa():
         out.append(Internship(
             t, "", "Remote",
             _c(e.get("summary", ""))[:2000], e.link,
-            "rwfa", [], e.get("published", ""), True))
+            "remote_io", [], e.get("published", ""), True))
     return out
 
 
 SCRAPERS = [
-    scrape_remotive,
     scrape_arbeitnow,
     scrape_hn_whoishiring,
     scrape_jobspresso,
     scrape_remoteok,
+    scrape_remotive,
     scrape_jobicy,
     scrape_himalayas,
     scrape_weworkremotely,
-    scrape_remoteco,
-    scrape_rwfa,
+    scrape_working_nomads,
 ]
 
 
@@ -282,7 +297,7 @@ def run_all_scrapers(global_timeout=90):
     start = time.time()
     for fn in SCRAPERS:
         if time.time() - start > global_timeout:
-            print(f"[scrapers] time budget exceeded ({global_timeout}s), stopping early")
+            print(f"[scrapers] time budget exceeded ({global_timeout}s), stopping")
             break
         try:
             t0 = time.time()
