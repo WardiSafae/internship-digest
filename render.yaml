@@ -1,0 +1,29 @@
+services:
+  - type: web
+    name: internship-aggregator
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements-web.txt
+    startCommand: uvicorn web:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /healthz
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: SECRET_KEY
+        sync: false
+      - key: SMTP_HOST
+        sync: false
+      - key: SMTP_PORT
+        sync: false
+      - key: SMTP_USER
+        sync: false
+      - key: SMTP_PASS
+        sync: false
+      - key: FROM_ADDR
+        sync: false
+      - key: APP_BASE_URL
+        sync: false
+      - key: DRY_RUN
+        value: "0"
+      - key: PYTHON_VERSION
+        value: "3.11.10"
