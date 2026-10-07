@@ -23,11 +23,26 @@ def _q(sql: str) -> str:
 
 
 def get_conn():
+    """Return a live DB connection. Auto-reconnects if the previous one died."""
     global _DB_CONN
-    if _DB_CONN is None:
-        _DB_CONN = psycopg2.connect(DATABASE_URL)
-    return _DB_CONN
+    if _DB_CONN is not None:
+        # Health check: cheap query to confirm the connection is alive
+        try:
+            cur = _DB_CONN.cursor()
+            cur.execute("SELECT 1")
+            cur.fetchone()
+            return _DB_CONN
+        except Exception:
+            # Connection died (Neon suspension, network blip, etc.)
+            try:
+                _DB_CONN.close()
+            except Exception:
+                pass
+            _DB_CONN = None
 
+    # Fresh connection
+    _DB_CONN = psycopg2.connect(DATABASE_URL)
+    return _DB_CONN
 
 def init_db():
     con = get_conn()
