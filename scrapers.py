@@ -421,23 +421,7 @@ SCRAPERS = [
     scrape_rekrute, scrape_marocannonces,
 ]
 
-def save_internships(items):
-    con = init_db()
-    n = 0
-    with _DB_LOCK:
-        cur = con.cursor()
-        for it in items:
-            cur.execute(_q("SELECT 1 FROM internships WHERE id=?"), (it.id,))
-            if cur.fetchone(): continue
-            cur.execute(_q("""INSERT INTO internships
-                (id,title,company,location,description,url,source,tags,
-                 posted_at,remote,scraped_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)"""),
-                (it.id, it.title, it.company, it.location, it.description,
-                 it.url, it.source, json.dumps(it.tags), it.posted_at,
-                 int(it.remote), datetime.utcnow().isoformat()))
-            n += 1
-        con.commit()
-    return n
+
 
 def run_all_scrapers(global_timeout=120):
     all_items = []
@@ -466,16 +450,3 @@ def run_all_scrapers(global_timeout=120):
     print(f"[scrapers] done: {len(out)} unique items in {time.time()-start:.1f}s")
     return out
 
-# Seed if DB is empty
-con = init_db()
-with _DB_LOCK:
-    cur = con.cursor()
-    cur.execute("SELECT COUNT(*) FROM internships")
-    count = cur.fetchone()[0]
-
-if count == 0:
-    print("Seeding DB...")
-    save_internships(run_all_scrapers())
-    print("Done.")
-else:
-    print(f"DB already has {count} internships.")
