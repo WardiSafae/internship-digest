@@ -155,3 +155,19 @@ def mark_sent(email: str, ids):
                               ON CONFLICT (email, internship_id) DO NOTHING"""),
                         (email, i, datetime.utcnow().isoformat()))
         con.commit()
+
+
+def insert_internship(cur, row: dict, scraped_at: str) -> bool:
+    """Insert one internship (dict with the table's columns).
+    Returns True if the row was new, False if the id already existed.
+    Used by the Scrapy pipeline; the caller commits."""
+    cur.execute(_q("""INSERT INTO internships
+        (id, title, company, location, description, url, source, tags,
+         posted_at, remote, scraped_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?)
+        ON CONFLICT (id) DO NOTHING"""),
+        (row["id"], row["title"], row["company"], row["location"],
+         row["description"], row["url"], row["source"],
+         json.dumps(row["tags"]), row["posted_at"], int(row["remote"]),
+         scraped_at))
+    return cur.rowcount == 1

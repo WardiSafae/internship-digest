@@ -19,8 +19,6 @@ from db import (
     get_all_internships_df,
 )
 from matcher import search, location_match
-from scrapers import run_all_scrapers
-from db import save_internships
 from emailer import (
     run_digest_for,
     make_unsubscribe_token,

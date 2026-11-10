@@ -2,6 +2,10 @@
 
 An automated internship discovery and delivery system. It scrapes 11 job sources every 6 hours, matches new postings against each subscriber's keywords, and sends personalized HTML email digests.
 
+> **Branch `scrapy-scraping`:** the scraping layer is rebuilt with **Scrapy** (spiders, items, item
+> pipelines) instead of `requests` + BeautifulSoup. Everything else (database, matcher, e-mails, web UI)
+> is unchanged. See [SCRAPY.md](SCRAPY.md) for the design, how to run it, and what differs from `main`.
+
 **Live demo:** register at the ngrok URL printed when you run the notebook.
 **Cost:** $0/month (free tiers only).
 
@@ -90,34 +94,32 @@ This scrapes all sources, saves new internships, and sends digests to all subscr
 
 ## The Colab Notebook
 
-The full demo runs from `internships.ipynb`. Cells, top to bottom:
+`internship_aggregator.ipynb` only serves the **web interface**. It clones this repository, imports
+`web.py` and exposes it through ngrok. Scraping and e-mailing are done by GitHub Actions, which writes
+into the same PostgreSQL database the interface reads.
+
+```
+Colab (UI)  ──reads/writes──►  PostgreSQL (Neon)  ◄──writes──  GitHub Actions (Scrapy + digests)
+```
 
 | Cell | What it does |
 |------|--------------|
-| 1 | Installs dependencies |
-| 2 | Mounts Drive, loads secrets, creates a persistent `SECRET_KEY` |
-| 3 | Database layer (auto-reconnect, PostgreSQL or SQLite backend) |
-| 4 | Scrapers (9 global + 2 Moroccan) |
-| 5 | Auth (bcrypt + signed session cookies) |
-| 6 | Matcher (TF-IDF + title boost) |
-| 7 | Emailer (SMTP + HTML digest) |
-| 8 | FastAPI app |
-| 9 | Launches uvicorn + ngrok tunnel |
+| 1 | Installs the UI dependencies |
+| 2 | Clones/updates the repository (branch set in `BRANCH`) |
+| 3 | Reads the Colab secrets into environment variables |
+| 4 | Shows what is in the shared database (offers per source, last scrape time, subscribers) |
+| 5 | Starts uvicorn + ngrok and prints the public URL |
 
 Add these in the Colab Secrets panel (🔑) and enable "Notebook access" for each:
 
 | Secret | Value |
 |--------|-------|
-| `DATABASE_URL` | Neon connection string |
-| `SMTP_HOST` | `smtp-relay.brevo.com` |
-| `SMTP_PORT` | `587` |
-| `SMTP_USER` | Brevo login |
-| `SMTP_PASS` | Brevo SMTP key |
-| `FROM_ADDR` | Verified sender address |
+| `DATABASE_URL` | Same Neon connection string as GitHub Actions |
+| `SECRET_KEY` | **Same value as the GitHub Actions secret**, otherwise unsubscribe links in e-mails are rejected |
 | `NGROK_TOKEN` | From https://dashboard.ngrok.com |
-| `DRY_RUN` | `0` for real emails, `1` for testing |
+| `GITHUB_TOKEN` | Optional, only if the repository is private |
 
-After Cell 9 runs, the notebook prints a public ngrok URL that serves the web UI.
+The notebook forces `DRY_RUN=1`: the interface never sends e-mail.
 
 ---
 
@@ -125,19 +127,24 @@ After Cell 9 runs, the notebook prints a public ngrok URL that serves the web UI
 
 ```
 internship-digest/
-├── db.py                 # Database layer (auto-reconnect, dual backend)
-├── scrapers.py           # 11 active scrapers (9 global + 2 Moroccan)
-├── matcher.py            # TF-IDF search + title boost
-├── emailer.py            # HTML digest renderer + SMTP sender
-├── job.py                # GitHub Actions entry point
-├── web.py                # FastAPI web UI
-├── matcher_web.py        # Lightweight matcher for the web app (no pandas)
-├── requirements.txt      # Full deps (scrapers + matcher + web)
-├── requirements-web.txt  # Slim deps (web only)
-├── .github/
-│   └── workflows/
-│       └── digest.yml    # Cron schedule: every 6 hours
-├── internships.ipynb     # Colab notebook (full demo)
+├── scrapy.cfg                 # Scrapy project marker
+├── internship_scrapy/
+│   ├── settings.py            # politeness, retries, concurrency, pipeline order
+│   ├── items.py               # InternshipItem (one model for all sources)
+│   ├── pipelines.py           # Clean -> Id -> Dedup -> Postgres
+│   └── spiders/               # one spider per source (11)
+├── run_spiders.py             # runs all spiders in one reactor, prints a summary
+├── tests/                     # offline spider/pipeline tests (pytest)
+├── db.py                      # Database layer (auto-reconnect, dual backend)
+├── matcher.py                 # TF-IDF search + title boost
+├── emailer.py                 # HTML digest renderer + SMTP sender
+├── job.py                     # GitHub Actions entry point (scrape -> digests)
+├── web.py                     # FastAPI web UI
+├── requirements.txt           # Full deps (Scrapy + matcher + web)
+├── requirements-web.txt       # Slim deps (web UI only)
+├── .github/workflows/digest.yml   # Cron: every 6 hours
+├── internship_aggregator.ipynb    # Colab notebook (UI only)
+├── SCRAPY.md                  # Design notes for the Scrapy branch
 └── README.md
 ```
 
@@ -145,43 +152,36 @@ internship-digest/
 
 ## How Scraping Works
 
-Eleven sources, three formats. The most structured option is used wherever a source allows it.
+Scraping is done with **Scrapy**: one spider per source, all run concurrently in a single process by
+`run_spiders.py`. The most structured format is used wherever a source offers it.
 
-| Format | Sources | Approach |
-|--------|---------|----------|
-| JSON API (7) | Remotive, Arbeitnow, Hacker News (Algolia API), RemoteOK, Jobicy, Himalayas, Working Nomads | `requests.get(url).json()` |
-| RSS feed (2) | Jobspresso, We Work Remotely | `feedparser` |
-| HTML (2) | Rekrute, MarocAnnonces | `BeautifulSoup` + `lxml` with CSS selectors |
+| Format | Sources | Approach in the spider |
+|--------|---------|------------------------|
+| JSON API (7) | Remotive, Arbeitnow, Hacker News (Algolia API), RemoteOK, Jobicy, Himalayas, Working Nomads | `response.json()` |
+| RSS feed (2) | Jobspresso, We Work Remotely | XPath on the XML (`response.xpath("//item")`) |
+| HTML (2) | Rekrute, MarocAnnonces | CSS selectors (`response.css(...)`) |
 
-Every scraper returns `Internship` objects. The ID, `MD5(title|company|url)`, is the deduplication key.
+Spiders only **extract**. What happens next is done once, in item pipelines:
+`CleanPipeline` (strip HTML, cap at 2000 chars, drop items without title/URL) →
+`IdPipeline` (`MD5(title|company|url)`) → `DedupPipeline` (duplicates within a run) →
+`PostgresPipeline` (`INSERT ... ON CONFLICT (id) DO NOTHING`).
 
-A source that has no listing for entry-level roles is filtered locally with a keyword list (`intern`, `graduate`, `junior`, `entry`, `trainee`, `apprentice`).
+Entry-level filtering is a keyword list (`intern`, `graduate`, `junior`, `entry`, `trainee`,
+`apprentice`) applied inside the spiders whose source has no internship-only feed.
 
 ### Resilience
 
-1. **Per-request timeout** (8 to 12 seconds), so a hanging source cannot block the job.
-2. **Per-source `try/except`**, so one failing source does not stop the others.
-3. **Global 120-second budget** for the whole scraping run.
+1. **Concurrency per source**: one spider per source, so a slow source does not delay the others.
+2. **Retries** (2) on timeouts and 5xx/429, **AutoThrottle** slows down automatically if a site is slow.
+3. **Timeouts**: 15 s per request and a hard 110 s limit per spider.
+4. **`robots.txt` is obeyed** (`ROBOTSTXT_OBEY`); blocked requests are counted and reported.
+5. **Failure isolation**: a failed source is logged and counted, the other spiders keep going.
 
-### Sample output
+### Run summary
 
-```
-[scrapers] starting...
-  OK scrape_remotive               17 items  (0.1s)
-  OK scrape_arbeitnow              19 items  (0.3s)
-  OK scrape_hn_whoishiring         30 items  (1.0s)
-  OK scrape_jobspresso             10 items  (0.3s)
-  OK scrape_remoteok               11 items  (0.5s)
-  OK scrape_jobicy                  6 items  (0.1s)
-  -- scrape_himalayas               0 items  (0.1s)
-  OK scrape_weworkremotely          3 items  (0.8s)
-  OK scrape_working_nomads          4 items  (0.6s)
-  OK scrape_rekrute                 9 items  (0.9s)
-  OK scrape_marocannonces          20 items  (0.5s)
-[scrapers] done: 129 unique items in 8.6s
-```
-
-Source counts vary from run to run. Himalayas currently returns no entry-level results.
+`run_spiders.py` prints one line per source: items scraped, rows the source returned before filtering
+(`seen`), new rows saved, rows already known, failed requests, robots.txt blocks and HTTP 4xx/5xx
+answers. It exits with code 2 if not a single item came back.
 
 ---
 
@@ -260,7 +260,9 @@ Company · Munich · arbeitnow · match 0.15
 The GitHub Actions workflow is committed in `.github/workflows/digest.yml`.
 
 - **Verify it runs:** open the repository's Actions tab.
-- **Trigger manually:** Actions → Internship Digest → Run workflow.
+- **Trigger manually:** Actions → Internship Digest → Run workflow. You can pick the branch to run
+  (e.g. `scrapy-scraping`) and set `dry_run` to `1` to test without sending e-mails.
+  Scheduled runs always use the repository's default branch.
 - **Pause:** comment out the `schedule` block in the workflow file and commit.
 
 GitHub scheduled workflows can be delayed under load, so "every 6 hours" is approximate.
@@ -322,11 +324,10 @@ These should be fixed before any real production use.
 | Some Moroccan sites block scripts | Emploi.ma, ANAPEC unavailable | Headless browser (Playwright) |
 | Lexical TF-IDF matching | Misses synonyms | Sentence embeddings |
 | Entry-level filter is a substring match | "intern" also matches "internal"; French terms (`stage`, `stagiaire`) are not in the list | Word-boundary matching and French keywords |
-| `job.py` always exits with code 0 | A failed run still shows green in Actions | Count errors and exit non-zero |
-| No retries on SMTP or HTTP errors | A failed send waits until the next run | Retry with backoff |
-| No `robots.txt` check | Compliance is manual | Review each site's terms; prefer APIs |
+| No retry on SMTP errors | A failed send waits until the next run (HTTP requests are retried by Scrapy) | Retry with backoff |
+| `robots.txt` is obeyed, terms of service are not checked | A source may be blocked by robots.txt | Review each site's terms; prefer APIs |
 | HTML scrapers depend on page structure | Break when a site is redesigned | Monitoring and alerts |
-| `stagiaires_ma` scraper is defined but inactive | Timed out in testing | Re-test or remove |
+| `stagiaires_ma` was not ported | Timed out in testing on `main` | Re-test, then add a spider |
 
 ---
 
@@ -339,9 +340,8 @@ These should be fixed before any real production use.
 | Server | Uvicorn | ASGI server |
 | Database | PostgreSQL (Neon) | Network-accessible, persistent across runs |
 | DB driver | psycopg2-binary | Standard Python PostgreSQL driver |
-| HTTP | requests | Simple and well known |
-| HTML parsing | BeautifulSoup + lxml | CSS-selector parsing |
-| RSS | feedparser | Handles RSS/Atom quirks |
+| Scraping | Scrapy | Spiders, concurrency, retries, robots.txt, item pipelines |
+| Parsing | parsel (CSS/XPath, bundled with Scrapy) | One selector API for HTML, XML and JSON |
 | Matching | scikit-learn (TF-IDF) | Standard information retrieval |
 | Passwords | bcrypt | Purpose-built for password hashing |
 | Signed tokens | itsdangerous | Signed sessions and links |
@@ -352,16 +352,18 @@ These should be fixed before any real production use.
 
 ---
 
-## Why Not Scrapy?
+## Why Scrapy (this branch) and not `requests` + BeautifulSoup (`main`)
 
-The project uses `requests` + BeautifulSoup instead of Scrapy, for these reasons:
+`main` keeps the simple version; this branch exists to compare. Scrapy adds what the hand-written
+version lacked: concurrency, retries, throttling, `robots.txt` compliance, and a standard place
+(pipelines) for cleaning, deduplication and storage. The cost is a framework to learn, more files,
+and the Twisted reactor, which cannot be restarted: that is why `job.py` runs the spiders in a child
+process (`run_spiders.py`) instead of calling Scrapy from inside its own process.
 
-1. **Little crawling is needed.** 9 of the 11 sources are JSON APIs or RSS feeds, so there is nothing to crawl. Only 2 sources need HTML parsing, and they are a handful of pages.
-2. **Simplicity.** Each source is one function returning a list of `Internship` objects. Adding a source means writing one function, and a broken source can be debugged in isolation.
-3. **Short-lived runs.** The job is a short cron script, and scraping is a small part of the project. Scrapy's Twisted reactor cannot be restarted in the same process, which complicates notebooks and servers that trigger scraping on demand.
-4. **Adequate speed.** A full run takes about 10 seconds, so concurrency would add little.
-
-What Scrapy would give that this code lacks: automatic retries, throttling, built-in `robots.txt` compliance, concurrency, and item pipelines. If the project grows to many HTML sources or needs deep crawling, Scrapy is the natural migration path: each scraper function becomes a Spider, the dataclass becomes an Item, and deduplication plus `save_internships()` become a pipeline.
+For 11 sources, most of them JSON APIs, the speed difference is small (a full run was already about
+10 seconds). The practical gains are the built-in politeness and the clearer separation of
+*extracting* (spiders) from *processing and storing* (pipelines). Details and the list of behavioural
+differences are in [SCRAPY.md](SCRAPY.md).
 
 ---
 
@@ -382,7 +384,7 @@ What Scrapy would give that this code lacks: automatic retries, throttling, buil
 - [ ] Per-source health monitoring with alerts
 
 **Long term**
-- [ ] Migrate scrapers to Scrapy if the source count grows
+- [x] Migrate scrapers to Scrapy (branch `scrapy-scraping`)
 - [ ] Playwright for JavaScript-heavy sites
 - [ ] Public API (`/api/v1/internships`)
 - [ ] Arabic tokenization for Arabic-only titles
@@ -393,13 +395,14 @@ What Scrapy would give that this code lacks: automatic retries, throttling, buil
 
 This is a student project. To add a new source:
 
-1. Write a `scrape_<name>()` function in `scrapers.py` that returns `List[Internship]`.
-2. Add it to the `SCRAPERS` list.
-3. Test it:
+1. Create `internship_scrapy/spiders/<name>.py` with a spider that subclasses `InternshipSpider`,
+   sets `name` and `start_urls`, and yields `self.make_item(title=..., url=..., ...)` from `parse()`.
+2. Test it offline: add a small fixture to `tests/fixtures.py` and a test to `tests/test_spiders.py`, then `pytest -q`.
+3. Try it without touching the database:
    ```bash
-   python -c "from scrapers import scrape_<name>; print(len(scrape_<name>()))"
+   SAVE_TO_DB=0 scrapy crawl <name> -O out.json
    ```
-4. Commit.
+4. Commit. `run_spiders.py` discovers the new spider automatically.
 
 ---
 
